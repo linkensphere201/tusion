@@ -2,3 +2,4 @@ build/
 .cache/
 *.swp
 *.o
+.source.sh

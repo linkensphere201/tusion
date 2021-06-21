@@ -1,5 +1,8 @@
 #/bin/bash
 
+# set env here
+source ./.source.sh
+
 cmake -S . -B build                                    \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON                 \
     -DCMAKE_INSTALL_PREFIX="${installdir}"             \
