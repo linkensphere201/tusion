@@ -7,6 +7,7 @@
 #include <boost/accumulators/statistics/moment.hpp>
 #include <boost/accumulators/statistics/stats.hpp>
 #include <boost/array.hpp>
+#include <folly/MPMCQueue.h>
 
 #include <nebula/client/Config.h>
 #include <nebula/client/ConnectionPool.h>
@@ -33,7 +34,11 @@ template <typename T> struct Acc {
         acc(m);
         pt_count++;
     }
+    void AddErrorMetric() {
+        err_count++;
+    }
     size_t MetricCount() { return pt_count; }
+    size_t ErrorCount() { return err_count; }
     T      Mean() { return boost::accumulators::mean(acc); }
     T      Min() { return boost::accumulators::min(acc); }
     T      Max() { return boost::accumulators::max(acc); }
@@ -45,18 +50,20 @@ template <typename T> struct Acc {
 
     acc_set acc;
     size_t  pt_count;
+    size_t  err_count;
 };
 
 class GQLGenerator;
 class SimpleGoGenerator;
 
 struct Context {
-    Context(const std::string &addr, int timeoutms, int maxconn)
+    Context(const std::string &addr, int timeoutms, int maxconn, int q_depth)
         : addr_(addr), timeoutms_(timeoutms), maxconn_(maxconn),
-          should_stop_(false) {}
+          should_stop_(false), mpmc_(q_depth) {}
 
     bool init(const std::string &input, const std::string &delim,
               int pre_load_count);
+    void summary(std::string &result);
 
     Context(const Context &) = delete;
     std::string       addr_;
@@ -66,7 +73,8 @@ struct Context {
 
     nebula::ConnectionPool             pool_;
     std::shared_ptr<SimpleGoGenerator> sgg_;
-    Acc<int>                           acc_;
+    folly::MPMCQueue<std::string>      mpmc_;
+    Acc<uint64_t>                      acc_;
 };
 
 struct Benchmarker : std::enable_shared_from_this<Benchmarker> {
@@ -98,13 +106,13 @@ class SimpleGoGenerator : public GQLGenerator {
         : f1_(f1), delim_(delim) {}
 
     void getSentence(std::string &sentence) final {
-        sentence = "GO 1 STEPS FROM ";
+        sentence = "GO 2 STEPS FROM ";
         sentence.append(words_[idx_++ % words_.size()]);
         sentence.append(" OVER KNOWS");
     }
 
     // GO 2 STEP FROM {x} OVER KNOWS
-    void                     getSourceWords(int count);
+    void                     getSourceWords(int count, bool shuffle = false);
     std::string              f1_;
     std::string              delim_;
     int                      idx_{0};

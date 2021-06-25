@@ -4,6 +4,7 @@
 #include <gflags/gflags.h>
 #include <chrono>
 #include <thread>
+#include <sstream>
 
 DEFINE_string(cli_addr, "0.0.0.0:9669", "graphd address");
 DEFINE_int32(concurrency, 10, "count of clients");
@@ -22,8 +23,22 @@ bool Context::init(const std::string & input, const std::string &delim, int pre_
     pool_.init({addr_}, nebula::Config{timeoutms_, 0 /*idle time*/, maxconn_,
                                        0 /*min conn*/});
     sgg_.reset(new SimpleGoGenerator(input, delim));
-    sgg_->getSourceWords(pre_load_count);
+    sgg_->getSourceWords(pre_load_count, true);
     return true;
+}
+
+void Context::summary(std::string & result) {
+    std::stringstream ss;
+    ss << "Request Total/Error: ";
+    ss << acc_.MetricCount() << "/";
+    ss << acc_.ErrorCount() << ". Resp ";
+    ss << " Mean/Min/Max/P50/P99: ";
+    ss << ((double)acc_.Mean()/1000) << " /";
+    ss << ((double)acc_.Min()/1000) << " /";
+    ss << ((double)acc_.Max()/1000) << " /";
+    ss << ((double)acc_.P50()/1000) << " /";
+    ss << ((double)acc_.P99()/1000);
+    result = ss.str();
 }
 
 void Benchmarker::init(int argc, char *argv[]) {
@@ -45,7 +60,8 @@ void Benchmarker::init(int argc, char *argv[]) {
 
     for (size_t i = 0; i < FLAGS_concurrency; i++) {
         ctxs_.emplace_back(new Context(FLAGS_cli_addr, FLAGS_timeout_ms,
-                                       FLAGS_max_conn_count));
+                                       FLAGS_max_conn_count,
+                                       pipeline_depth_));
     }
     for (auto & c : ctxs_) {
         c->init(FLAGS_input_source_file, FLAGS_delim, FLAGS_preload_count);
