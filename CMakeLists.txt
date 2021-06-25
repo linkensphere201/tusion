@@ -19,6 +19,7 @@ find_package(Libevent REQUIRED)
 find_package(DoubleConversion REQUIRED)
 find_package(Fmt REQUIRED)
 find_package(BoostContext REQUIRED)
+find_package(NebulaClients REQUIRED)
 
 include_directories(SYSTEM ${CMAKE_INCLUDE_PATH})
 include_directories(BEFORE ${CMAKE_SOURCE_DIR}/include)

@@ -8,7 +8,8 @@ foreach(TST_SINGLE_SRC ${TEST_SOURCES})
         SOURCES
             ${TST_SINGLE_SRC}
         OBJECTS
-            $<TARGET_OBJECTS:tusion_obj>
+            $<TARGET_OBJECTS:tusion_util_obj>
+            $<TARGET_OBJECTS:tusion_bench_obj>
         IS_TEST
     )
 endforeach()

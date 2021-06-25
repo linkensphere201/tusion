@@ -9,5 +9,16 @@ tusion_add_executable(
     SOURCES
         t_main.cc
     OBJECTS
-        $<TARGET_OBJECTS:tusion_obj>
+        $<TARGET_OBJECTS:tusion_util_obj>
 )
+
+tusion_add_executable(
+    NAME
+        e2e_bm
+    SOURCES
+        e2e_bench_nebula.cc
+    OBJECTS
+        $<TARGET_OBJECTS:tusion_util_obj>
+        $<TARGET_OBJECTS:tusion_bench_obj>
+)
+

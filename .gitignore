@@ -2,4 +2,6 @@ build/
 .cache/
 *.swp
 *.o
+tags
+*.csv
 .source.sh

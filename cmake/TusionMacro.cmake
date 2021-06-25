@@ -10,6 +10,7 @@ macro(tusion_print_environment_variables)
     tusion_print_config(CMAKE_CXX_STANDARD "")
     tusion_print_config(CMAKE_CXX_COMPILER "")
     tusion_print_config(CMAKE_CXX_COMPILER_ID "")
+    tusion_print_config(CMAKE_BINARY_DIR "")
 endmacro()
 
 macro(tusion_add_executable)
@@ -33,22 +34,32 @@ macro(tusion_add_executable)
         ${tusion_exec_LIBRARIES}
         ${spdlog_LIBRARIES}
         ${folly_LIBRARIES}
-        ${gflags_LIBRARIES}
         ${glog_LIBRARIES}
+        ${gflags_LIBRARIES}
         ${libevent_LIBRARIES}
         ${double-conversion_LIBRARIES}
         ${fmt_LIBRARIES}
         ${boost_context_LIBRARIES}
+        ${nebula_graph_client_LIBRARIES}
         resolv
         dl
         -liberty
         -pthread
     )
 
+    set_target_properties(
+        ${tusion_exec_NAME}
+        PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    )
+
     if (${tusion_exec_IS_TEST})
         target_link_libraries(
             ${tusion_exec_NAME}
             ${Gtest_LIBRARIES}
+        )
+        set_target_properties(
+            ${tusion_exec_NAME}
+            PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests
         )
     endif()
 endmacro()

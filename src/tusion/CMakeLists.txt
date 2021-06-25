@@ -1,4 +1,2 @@
-add_library(
-    tusion_obj  OBJECT
-    log.cc
-)
+add_subdirectory(util)
+add_subdirectory(bench)
