@@ -1,10 +1,11 @@
 ### description
 this is a tool collection for personal, includes:
-    - a benchmark tool for nebula.
 
-    - a thrift-tool like tcp introspection tool working for fbthrift. (PEND)
+- a benchmark tool for nebula.
 
-    - a redis-protocol-compatible key-value store. (PEND)
+- a thrift-tool like tcp introspection tool working for fbthrift. (PEND)
+
+- a redis-protocol-compatible key-value store. (PEND)
 
 ### build
 
