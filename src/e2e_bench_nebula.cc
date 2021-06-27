@@ -56,19 +56,18 @@ void run_NebulaBenchmark(int argc, char *argv[]) {
                     }
 
                     count_flying_request.fetch_add(1);
-                    uint64_t ts_start = tusion::util::NowMicros();
 
                     session.asyncExecute(
                             s,
-                            [&count_flying_request, &ctx, &ts_start] (nebula::ExecutionResponse&& cbResult) {
+                            [&count_flying_request, &ctx, &s] (nebula::ExecutionResponse&& cbResult) {
                                 count_flying_request.fetch_sub(1);
                                 if (cbResult.errorCode != nebula::ErrorCode::SUCCEEDED) {
                                     ctx->acc_.AddErrorMetric();
                                     return;
                                 }
-                                uint64_t escaped = tusion::util::NowMicros() - ts_start;
-                                // log_info("request is completed, spent {} ms", escaped >> 10);
-                                ctx->acc_.AddMetric(escaped);
+                                // log_info("request is completed, spent {} us", cbResult.latencyInUs);
+                                // log_info("GQL - {} \nres-\n {}", s, cbResult.data->toString());
+                                ctx->acc_.AddMetric(cbResult.latencyInUs);
                             });
                 }
             }

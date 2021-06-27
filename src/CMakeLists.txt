@@ -14,7 +14,7 @@ tusion_add_executable(
 
 tusion_add_executable(
     NAME
-        e2e_bm
+        e2enbench
     SOURCES
         e2e_bench_nebula.cc
     OBJECTS
