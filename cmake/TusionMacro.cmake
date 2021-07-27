@@ -40,7 +40,7 @@ macro(tusion_add_executable)
         ${double-conversion_LIBRARIES}
         ${fmt_LIBRARIES}
         ${boost_context_LIBRARIES}
-        ${nebula_graph_client_LIBRARIES}
+        # ${nebula_graph_client_LIBRARIES}
         resolv
         dl
         -liberty

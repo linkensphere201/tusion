@@ -6,4 +6,5 @@ tags
 *.csv
 *.log
 core.*
+output/
 .source.sh

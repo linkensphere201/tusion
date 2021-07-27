@@ -1,4 +1,15 @@
-[
+{
+"datacontrol": {
+    "fileprefix" : "output/sample.dataset",
+    "vcount" : 100000,
+    "ecount" : 200000,
+    "header" : false,
+    "degree_min" : 2,
+    "degree_max" : 5,
+    "init_pick" : 1000,
+    "decay" : 0.8
+},
+"dataset" : [
 {
  "type": "tag",
  "name": "DM10002640",
@@ -68,3 +79,4 @@
   }
 }
 ]
+}

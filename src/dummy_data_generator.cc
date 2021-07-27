@@ -2,13 +2,15 @@
 #include "log.h"
 #include "util.h"
 
+#include <atomic>
 #include <boost/exception/diagnostic_information.hpp>
 #include <boost/exception_ptr.hpp>
 #include <boost/json/src.hpp>
+#include <folly/MPMCQueue.h>
 #include <fstream>
-#include <sstream>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -25,9 +27,12 @@ struct PropDesc {
     std::string                                    name;
     std::string                                    desc;
     std::shared_ptr<tusion::gen::ContentGenerator> cgr;
+
+    bool isSrcVid; // NB - for edge's src vid only
+
     PropDesc(const std::string &pname, const std::string &pval)
-        : name(pname), desc(pval), cgr(tusion::gen::GetContentGenerator(pval)) {
-    }
+        : name(pname), desc(pval), cgr(tusion::gen::GetContentGenerator(pval)),
+          isSrcVid(pval.compare("@SrcVid") == 0) {}
 
     std::string GetContent(const std::string &s = kDefaultVal) {
         std::string v;
@@ -43,6 +48,38 @@ struct PropDesc {
     std::string ToString() {
         return fmt::format("n={}, d={}, gen={}", name, desc,
                            cgr.get() != nullptr);
+    }
+};
+
+struct MissionDesc {
+    std::string filename_prefix;
+    size_t      vcount;
+    size_t      ecount;
+    bool        header;
+
+    size_t degree_min;
+    size_t degree_max;
+    size_t init_pick;
+    double decay_ratio;
+
+    void init(boost::json::value &md) {
+        filename_prefix = md.at("fileprefix").as_string().data();
+        vcount          = md.at("vcount").as_int64();
+        ecount          = md.at("ecount").as_int64();
+        header          = md.at("header").as_bool();
+
+        degree_min = md.at("degree_min").as_int64();
+        degree_max = md.at("degree_max").as_int64();
+        init_pick  = md.at("init_pick").as_int64();
+
+        decay_ratio = md.at("decay").as_double();
+    }
+
+    std::string ToString() {
+        return fmt::format("fileprefix={}, vcount={}, ecount={}, header={}, "
+                           "dmin={}, dmax={}, initPick={}, decay={}",
+                           filename_prefix, vcount, ecount, header, degree_min,
+                           degree_max, init_pick, decay_ratio);
     }
 };
 
@@ -143,6 +180,15 @@ struct TagDesc {
     // runtime
     std::vector<std::string> vlist;
 
+    std::string GetHeader() {
+        std::stringstream ss;
+        ss << "VID";
+        for (auto &des : props) {
+            ss << "," << des.name;
+        }
+        return ss.str();
+    }
+
     TagDesc(boost::json::value &ctx) {
         try {
             name    = ctx.at("name").as_string().data();
@@ -182,11 +228,24 @@ struct EdgeDesc {
         size_t dstIdx;
         edge(size_t s, size_t d) : srcIdx(s), dstIdx(d) {}
     };
+    using EdgeBuffer_t = std::shared_ptr<std::vector<EdgeDesc::edge>>;
     static const int constexpr kEdgeBufferSize =
         1000; // each generation thread maintain it's edge buffer
     // std::shared_ptr<std::vector<struct edge>> edge_buffer;
 
-    EdgeDesc(boost::json::value &ctx) {
+    // runtime
+    folly::MPMCQueue<EdgeBuffer_t> q1;
+
+    std::string GetHeader() {
+        std::stringstream ss;
+        ss << "SrcVid,DstVid";
+        for (auto &prop : props) {
+            ss << "," << prop.name;
+        }
+        return ss.str();
+    }
+
+    EdgeDesc(boost::json::value &ctx) : q1(1024) {
         try {
             name = ctx.at("name").as_string().data();
 
@@ -230,6 +289,7 @@ std::string GetConfText(const std::string &fpath = "sample.json") {
 
 std::unordered_map<std::string, std::shared_ptr<TagDesc>>  gTagMap;
 std::unordered_map<std::string, std::shared_ptr<EdgeDesc>> gEdgeMap;
+MissionDesc                                                gMissionDesc;
 
 void Show() {
     log_info("====== Show ======");
@@ -241,6 +301,7 @@ void Show() {
         log_info("edge: {} ==> ", iv.first);
         log_info("\n{}", iv.second->ToString());
     }
+    log_info("config: {}", gMissionDesc.ToString());
     log_info("============");
 }
 
@@ -258,7 +319,11 @@ bool ReadConfig(const std::string &filepath) {
                  ec.message(), conftext);
         return false;
     }
-    auto ctxs = jv.get_array();
+
+    auto mdesc = jv.at("datacontrol");
+    gMissionDesc.init(mdesc);
+
+    auto ctxs = jv.at("dataset").as_array();
     for (size_t i = 0; i < ctxs.size(); i++) {
         auto        ctx   = ctxs.at(i);
         std::string ttype = ctx.at("type").as_string().data();
@@ -279,6 +344,7 @@ bool ReadConfig(const std::string &filepath) {
 void TagGenerationVid(std::shared_ptr<TagDesc> td, size_t count) {
     log_info("Tag {}: generating vid ...", td->name);
 
+    td->vlist.clear();
     td->vlist.reserve(count);
     for (size_t i = 0; i < count; i++) {
         std::string ctn;
@@ -303,43 +369,125 @@ void GenerateVids(size_t cnt) {
     log_info("vid generation done...");
 }
 
+void VertexWriter(std::shared_ptr<TagDesc> td, const std::string &filepath,
+                  bool with_header) {
+    std::ofstream out(filepath);
+    log_info("output to file: {}", filepath);
+
+    if (with_header) {
+        out << td->GetHeader() << "\n";
+    }
+    log_info("file {} header is {}", filepath, td->GetHeader());
+
+    for (auto &vid : td->vlist) {
+        out << vid;
+        for (auto &prop : td->props) {
+            out << "," << prop.GetContent(vid);
+        }
+        out << "\n";
+    }
+    out.close();
+}
+
+// step 1.5. Vertex Dump
+void DumpVertex(const std::string &prefix) {
+    std::vector<std::thread> threads;
+    for (auto &iv : gTagMap) {
+        log_info("dumping tag {} ...", iv.first);
+        std::string fname = prefix + std::string("_vertex_") + "." + iv.first;
+        threads.push_back(std::thread(VertexWriter, iv.second, fname, true));
+    }
+    for (auto &th : threads) {
+        th.join();
+    }
+    log_info("tags dump done ...");
+}
+
+void EdgeConsumer(folly::MPMCQueue<EdgeDesc::EdgeBuffer_t> &q,
+                  std::atomic<bool> &quit, std::shared_ptr<EdgeDesc> ed,
+                  const std::string &prefix, bool with_header) {
+    std::string   file_name = prefix + std::string("_edge_") + "." + ed->name;
+    std::ofstream out(file_name);
+    if (with_header) {
+        out << ed->GetHeader() << "\n";
+    }
+    log_info("file {} header is {}", file_name, ed->GetHeader());
+
+    while (1) {
+        EdgeDesc::EdgeBuffer_t ebp;
+        if (q.read(ebp)) {
+            for (auto &eg : *ebp) {
+                // log_info("edge: [{}]:{} -> [{}]:{}",
+                //    ed->from->name, ed->from->vlist[eg.srcIdx],
+                //    ed->to->name, ed->to->vlist[eg.dstIdx]);
+                out << ed->from->vlist[eg.srcIdx] << ","
+                    << ed->to->vlist[eg.dstIdx];
+                for (auto &prop : ed->props) {
+                    out << ","
+                        << prop.GetContent(prop.isSrcVid
+                                               ? ed->from->vlist[eg.srcIdx]
+                                               : ed->to->vlist[eg.dstIdx]);
+                }
+                out << "\n";
+            }
+        } else {
+            if (quit.load()) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    }
+
+    out.close();
+    log_info("consumer for {} quitting ...", ed->name);
+}
+
 void MakeEdges(std::shared_ptr<EdgeDesc> ed, size_t degreeMin, size_t degreeMax,
-               size_t initPick, double decayRatio, size_t count) {
+               size_t initPick, double decayRatio, size_t count,
+               folly::MPMCQueue<EdgeDesc::EdgeBuffer_t> &q) {
     size_t                      ldepth, lastPick = initPick;
     size_t                      gcount = 0;
     tusion::gen::GeneratorRange degreepicker(degreeMin, degreeMax);
 
-    log_info("make edge: {}, degree: [{},{}], initpick: {}, decay: {}, count: {}",
-            ed->name, degreeMin, degreeMax, initPick, decayRatio, count);
+    log_info(
+        "make edge: {}, degree: [{},{}], initpick: {}, decay: {}, count: {}",
+        ed->name, degreeMin, degreeMax, initPick, decayRatio, count);
 
-    std::shared_ptr<std::vector<EdgeDesc::edge>> edge_buffer;
+    EdgeDesc::EdgeBuffer_t edge_buffer;
 
-    auto nodePicker = [](size_t cnt, size_t min_, size_t max_,
-                         std::vector<size_t> &result,
-                         std::vector<size_t> *src = nullptr,
-                         bool conv = false) {
-        tusion::gen::GeneratorRange p(min_, max_);
-        result.clear();
-        while (cnt > 0) {
-            size_t pick;
-            p.generate(pick);
-            if (src != nullptr && conv) {
-                pick = (*src)[pick];
+    auto nodePicker =
+        [](size_t cnt, size_t min_, size_t max_, std::vector<size_t> &result,
+           std::vector<size_t> *src = nullptr, bool conv = false) {
+            tusion::gen::GeneratorRange p(min_, max_);
+            result.clear();
+            while (cnt > 0) {
+                size_t pick;
+                p.generate(pick);
+                if (src != nullptr && conv) {
+                    pick = (*src)[pick];
+                }
+                result.push_back(pick);
+                cnt--;
             }
-            result.push_back(pick);
-            cnt--;
-        }
-    };
-    auto consumeEdge = [&edge_buffer, &ed] () {
-        log_info("consume {} edges ...", edge_buffer->size());
+        };
+    auto consumeEdge = [&edge_buffer, &ed, &q]() {
+        /*
         for (auto & eg : *edge_buffer) {
             log_info("edge: [{}]:{} -> [{}]:{}",
                     ed->from->name, ed->from->vlist[eg.srcIdx],
                     ed->to->name, ed->to->vlist[eg.dstIdx]);
         }
+        */
+        while (!q.write(edge_buffer)) {
+            log_info("wait for q consumption...");
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+
+        log_info("consume {} edges submit done...", edge_buffer->size());
     };
 
-    auto collectEdge = [&ed, &edge_buffer, &gcount, &consumeEdge](size_t s, size_t d) {
+    auto collectEdge = [&ed, &edge_buffer, &gcount, &consumeEdge](size_t s,
+                                                                  size_t d) {
         if (edge_buffer.get() == nullptr) {
             edge_buffer.reset(new std::vector<EdgeDesc::edge>);
         }
@@ -355,15 +503,17 @@ void MakeEdges(std::shared_ptr<EdgeDesc> ed, size_t degreeMin, size_t degreeMax,
         }
     };
 
-    auto showvec = [](const std::string & title, std::vector<size_t> & v) {
+    auto showvec = [](const std::string &title, std::vector<size_t> &v) {
         log_info("==== {} =====", title);
-        for (auto & i : v) {
+        for (auto &i : v) {
             log_info("{}", i);
         }
     };
 
-    auto generateEdge = [&] (std::vector<size_t> *srcfromset, std::vector<size_t> *dstfromset,
-            std::vector<size_t> *srcnodes, std::vector<size_t> *dstnodes, bool conv) {
+    auto generateEdge = [&](std::vector<size_t> *srcfromset,
+                            std::vector<size_t> *dstfromset,
+                            std::vector<size_t> *srcnodes,
+                            std::vector<size_t> *dstnodes, bool conv) {
         srcnodes->reserve(initPick * degreeMax);
         dstnodes->reserve(initPick * degreeMax);
         srcnodes->clear();
@@ -372,28 +522,30 @@ void MakeEdges(std::shared_ptr<EdgeDesc> ed, size_t degreeMin, size_t degreeMax,
         std::vector<size_t> sn_dsts;
         sn_dsts.reserve(degreeMax);
 
-        log_info("pick {} nodes index range[{},{}] as src point ...", lastPick, 0, srcfromset->size() - 1);
-        nodePicker(lastPick, 0, srcfromset->size() - 1, (*srcnodes), srcfromset, conv);
-        showvec("pick src:", *srcnodes);
+        log_info("pick {} nodes index range[{},{}] as src point ...", lastPick,
+                 0, srcfromset->size() - 1);
+        nodePicker(lastPick, 0, srcfromset->size() - 1, (*srcnodes), srcfromset,
+                   conv);
+        // showvec("pick src:", *srcnodes);
 
         for (auto &sn : (*srcnodes)) {
             size_t d;
             degreepicker.generate(d);
-            std::stringstream ss;
-            ss << sn << " --> degree: " << d << " --> [";
+            // std::stringstream ss;
+            // ss << sn << " --> degree: " << d << " --> [";
             nodePicker(d, 0, dstfromset->size() - 1, sn_dsts, dstfromset, conv);
             for (auto &dn : sn_dsts) {
                 collectEdge(sn, dn);
-                ss << dn << ",";
+                //    ss << dn << ",";
             }
-            ss << "]";
-            log_info("{}", ss.str());
+            // ss << "]";
+            // log_info("{}", ss.str());
             dstnodes->insert(dstnodes->end(), sn_dsts.begin(), sn_dsts.end());
         }
 
         lastPick = lastPick * decayRatio;
 
-        showvec("pick dst:", *dstnodes);
+        // showvec("pick dst:", *dstnodes);
     };
     std::vector<size_t> fakelist_from, fakelist_to;
     fakelist_from.resize(ed->from->vlist.size());
@@ -401,22 +553,18 @@ void MakeEdges(std::shared_ptr<EdgeDesc> ed, size_t degreeMin, size_t degreeMax,
 
     log_info("generating edges for {} ...", ed->name);
     while (gcount < count && lastPick > 0) {
-        std::vector<size_t> src_nodes[2], dst_nodes[2];
-        size_t src_idx = 0, dst_idx = 0;
+        std::vector<size_t>  src_nodes[2], dst_nodes[2];
+        size_t               src_idx = 0, dst_idx = 0;
         std::vector<size_t> *src_from, *src_to, *dst_from, *dst_to;
 
         src_from = &fakelist_from;
         dst_from = &fakelist_to;
-        src_to = &(src_nodes[src_idx]);
-        dst_to = &(dst_nodes[dst_idx]);
+        src_to   = &(src_nodes[src_idx]);
+        dst_to   = &(dst_nodes[dst_idx]);
 
         /* first batch pick */
-        generateEdge(
-                src_from,
-                dst_from,
-                src_to /*source results*/,
-                dst_to /*dest   results*/,
-                false);
+        generateEdge(src_from, dst_from, src_to /*source results*/,
+                     dst_to /*dest   results*/, false);
 
         log_info("-----first round pick, has gen {} edges ----", gcount);
 
@@ -434,16 +582,14 @@ void MakeEdges(std::shared_ptr<EdgeDesc> ed, size_t degreeMin, size_t degreeMax,
             /* more depth batch pick if needed */
             src_from = dst_to;
             dst_from = src_to;
-            src_to = &(src_nodes[src_idx]);
-            dst_to = &(dst_nodes[dst_idx]);
-            generateEdge(
-                src_from,
-                dst_from,
-                src_to /*source results*/,
-                dst_to /*dest   results*/,
-                true);
+            src_to   = &(src_nodes[src_idx]);
+            dst_to   = &(dst_nodes[dst_idx]);
+            generateEdge(src_from, dst_from, src_to /*source results*/,
+                         dst_to /*dest   results*/, true);
 
-            log_info("-----{} round pick, src pick count: {}, has gen {} edges ----", dep - ldepth, lastPick, gcount);
+            log_info(
+                "-----{} round pick, src pick count: {}, has gen {} edges ----",
+                dep - ldepth, lastPick, gcount);
             src_idx++;
             src_idx = src_idx % 2;
             dst_idx++;
@@ -456,7 +602,9 @@ void MakeEdges(std::shared_ptr<EdgeDesc> ed, size_t degreeMin, size_t degreeMax,
 }
 
 // step 2. path with depth generation
-bool EdgeGeneration(std::shared_ptr<EdgeDesc> ed, size_t count) {
+bool EdgeGeneration(std::shared_ptr<EdgeDesc> ed, size_t count,
+                    size_t degreeMin, size_t degreeMax, size_t initPickCount,
+                    double decayRatio) {
     // from tag & to tag
     std::string from_tag_name = ed->cb->src_tag_name,
                 to_tag_name   = ed->cb->dst_tag_name;
@@ -468,15 +616,37 @@ bool EdgeGeneration(std::shared_ptr<EdgeDesc> ed, size_t count) {
     }
     ed->from = from->second;
     ed->to   = to->second;
-    MakeEdges(ed, /*kDegreeMin, kDegreeMax, kInitNodeCount, kDecayRatio*/
-            1, 3, 5, 0.5,
-            count);
+
+    MakeEdges(ed, degreeMin, degreeMax, initPickCount, decayRatio, count,
+              ed->q1);
+    return true;
 }
 
-bool EdgeGenerationFull(size_t count) {
+bool EdgeGenerationFull(size_t count, const std::string &pref, bool header,
+                        size_t degreeMin     = kDegreeMin,
+                        size_t degreeMax     = kDegreeMax,
+                        size_t initPickCount = kInitNodeCount,
+                        double decayRatio    = kDecayRatio) {
+    std::atomic<bool> quit;
+
+    quit.store(false);
+    std::vector<std::thread> consume_threads;
     for (auto &iv : gEdgeMap) {
-        bool res = EdgeGeneration(iv.second, count);
+        consume_threads.push_back(
+            std::thread(EdgeConsumer, std::ref(iv.second->q1), std::ref(quit),
+                        iv.second, pref, header));
     }
+
+    for (auto &iv : gEdgeMap) {
+        bool res = EdgeGeneration(iv.second, count, degreeMin, degreeMax,
+                                  initPickCount, decayRatio);
+    }
+    quit.store(true);
+
+    for (auto &th : consume_threads) {
+        th.join();
+    }
+    log_info("consume thread stopped ...");
 }
 
 void TestConfigParse() {
@@ -488,7 +658,7 @@ void TestConfigParse() {
 
     auto jv = boost::json::parse(conftext, ec, boost::json::storage_ptr(), opt);
 
-    auto ctxs = jv.get_array();
+    auto ctxs = jv.at("dataset").as_array();
     for (size_t i = 0; i < ctxs.size(); i++) {
         auto        ctx   = ctxs.at(i);
         std::string ttype = ctx.at("type").as_string().data();
@@ -509,17 +679,21 @@ void TestVidGen() {
     log_info("Reading Configs Done ....");
     Show();
 
-    GenerateVids(10);
+    GenerateVids(gMissionDesc.vcount);
 
     for (auto &iv : gTagMap) {
         log_info("tag: {} ...", iv.second->name);
         size_t ii = 0;
-        for (auto &iy : iv.second->vlist ) {
-            log_info("[{:02d}] : {}",  ii++, iy);
-        }
+        // for (auto &iy : iv.second->vlist ) {
+        //    log_info("[{:02d}] : {}",  ii++, iy);
+        // }
     }
 
-    EdgeGenerationFull(30);
+    DumpVertex(gMissionDesc.filename_prefix);
+    EdgeGenerationFull(gMissionDesc.ecount, gMissionDesc.filename_prefix,
+                       gMissionDesc.header, gMissionDesc.degree_min,
+                       gMissionDesc.degree_max, gMissionDesc.init_pick,
+                       gMissionDesc.decay_ratio);
 }
 
 } // namespace dummy_data_generator
