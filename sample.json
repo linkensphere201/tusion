@@ -1,0 +1,70 @@
+[
+{
+ "type": "tag",
+ "name": "DM10002640",
+ "vid": "string(20)",
+ "control" :
+ {
+ 	"count" : 9000000000
+ },
+ "props":
+  {
+  	"PartNumber": "string(8)",
+  	"IsBatchFlag": "bool",
+  	"BarCode": "@PrimaryKey"
+  }
+},
+{
+ "type" : "tag",
+ "name" : "DM10002660",
+ "vid": "@string(20)_string(14)", // "@PATTERN_props.BarCode_props.ContractNo",
+ "control" :
+ {
+ 	"count" : 1300000000
+ },
+ "props":
+ {
+ 	"ItemID" : "int",
+ 	"SNStatus" :  "E{FAHUO}E{LIHUO}",
+ 	"BarCode" : "string(20)",
+ 	"ContractNo" : "string(14)",
+	"DelFlag" : "bool",
+	"PartNumber": "string(5)",
+	"CreateTime" : "date",  // 2018-5-23T18:23:00
+	"OrderNo" : "int",
+	"COA" : "int",
+	"ErpOrderNo" : "int"
+ }
+},
+{
+ "type" : "edge",
+ "name" : "RM10011889",
+ "control" : {
+ 	"count": 8900000000,
+ 	"depth": "range[3,12]",
+ 	"srcname" : "DM10002640",
+ 	"dstname" : "DM10002640"
+  },
+  "props":
+  {
+  	"SourceUniqueKey": "@SrcVid",
+  	"TargetUniqueKey": "@DstVid",
+  	"DelFlag": "bool",
+  	"LastUpdateTime": "date",
+  	"CreateTime" : "date"
+  }
+},
+{
+ "type" : "edge",
+ "name" : "RM10011929",
+ "control" : {
+ 	"count": 1300000000,
+ 	"depth": "range[1,1]",
+ 	"srcname" : "DM10002660",
+ 	"dstname" : "DM10002640"
+  },
+  "props":
+  {
+  }
+}
+]

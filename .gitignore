@@ -4,5 +4,6 @@ build/
 *.o
 tags
 *.csv
+*.log
 core.*
 .source.sh

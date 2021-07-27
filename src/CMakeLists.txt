@@ -22,3 +22,12 @@ tusion_add_executable(
         $<TARGET_OBJECTS:tusion_bench_obj>
 )
 
+tusion_add_executable(
+    NAME
+        data_generator
+    SOURCES
+        dummy_data_generator.cc
+    OBJECTS
+        $<TARGET_OBJECTS:tusion_util_obj>
+        $<TARGET_OBJECTS:tusion_gen_obj>
+)

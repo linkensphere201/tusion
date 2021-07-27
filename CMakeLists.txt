@@ -9,7 +9,6 @@ include(TusionConfig)
 tusion_print_environment_variables()
 add_definitions(-DTUSIONHOME=${CMAKE_SOURCE_DIR})
 
-find_package(Fbthrift REQUIRED)
 find_package(Folly REQUIRED)
 find_package(GtestAndGmock REQUIRED)
 find_package(Gflags REQUIRED)
