@@ -45,6 +45,7 @@ macro(tusion_add_executable)
         dl
         -liberty
         -pthread
+        -static-libstdc++
     )
 
     set_target_properties(
