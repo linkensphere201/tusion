@@ -6,6 +6,7 @@
 #include <boost/exception_ptr.hpp>
 #include <boost/json/src.hpp>
 #include <fstream>
+#include <sstream>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -318,6 +319,7 @@ void MakeEdges(std::shared_ptr<EdgeDesc> ed, size_t degreeMin, size_t degreeMax,
                          std::vector<size_t> *src = nullptr,
                          bool conv = false) {
         tusion::gen::GeneratorRange p(min_, max_);
+        result.clear();
         while (cnt > 0) {
             size_t pick;
             p.generate(pick);
@@ -328,21 +330,25 @@ void MakeEdges(std::shared_ptr<EdgeDesc> ed, size_t degreeMin, size_t degreeMax,
             cnt--;
         }
     };
+    auto consumeEdge = [&edge_buffer, &ed] () {
+        log_info("consume {} edges ...", edge_buffer->size());
+        for (auto & eg : *edge_buffer) {
+            log_info("edge: [{}]:{} -> [{}]:{}",
+                    ed->from->name, ed->from->vlist[eg.srcIdx],
+                    ed->to->name, ed->to->vlist[eg.dstIdx]);
+        }
+    };
 
-    auto collectEdge = [&ed, &edge_buffer, &gcount](size_t s, size_t d) {
+    auto collectEdge = [&ed, &edge_buffer, &gcount, &consumeEdge](size_t s, size_t d) {
         if (edge_buffer.get() == nullptr) {
             edge_buffer.reset(new std::vector<EdgeDesc::edge>);
         }
         edge_buffer->emplace_back(s, d);
-        log_info("edge: [{}]:{} -> [{}]:{}",
-                ed->from->name, ed->from->vlist[s],
-                ed->to->name, ed->to->vlist[d]);
-
         gcount++;
 
         if (edge_buffer->size() > EdgeDesc::kEdgeBufferSize) {
             // consume to output thread.
-            log_info("consume edge ...");
+            consumeEdge();
 
             // output & realloc new buffer....
             edge_buffer.reset(new std::vector<EdgeDesc::edge>);
@@ -360,30 +366,41 @@ void MakeEdges(std::shared_ptr<EdgeDesc> ed, size_t degreeMin, size_t degreeMax,
             std::vector<size_t> *srcnodes, std::vector<size_t> *dstnodes, bool conv) {
         srcnodes->reserve(initPick * degreeMax);
         dstnodes->reserve(initPick * degreeMax);
+        srcnodes->clear();
+        dstnodes->clear();
 
         std::vector<size_t> sn_dsts;
         sn_dsts.reserve(degreeMax);
 
+        log_info("pick {} nodes index range[{},{}] as src point ...", lastPick, 0, srcfromset->size() - 1);
         nodePicker(lastPick, 0, srcfromset->size() - 1, (*srcnodes), srcfromset, conv);
+        showvec("pick src:", *srcnodes);
 
         for (auto &sn : (*srcnodes)) {
             size_t d;
             degreepicker.generate(d);
+            std::stringstream ss;
+            ss << sn << " --> degree: " << d << " --> [";
             nodePicker(d, 0, dstfromset->size() - 1, sn_dsts, dstfromset, conv);
             for (auto &dn : sn_dsts) {
                 collectEdge(sn, dn);
+                ss << dn << ",";
             }
+            ss << "]";
+            log_info("{}", ss.str());
+            dstnodes->insert(dstnodes->end(), sn_dsts.begin(), sn_dsts.end());
         }
 
-        dstnodes->insert(dstnodes->end(), sn_dsts.begin(), sn_dsts.end());
         lastPick = lastPick * decayRatio;
+
+        showvec("pick dst:", *dstnodes);
     };
     std::vector<size_t> fakelist_from, fakelist_to;
     fakelist_from.resize(ed->from->vlist.size());
     fakelist_to.resize(ed->to->vlist.size());
 
-
-    while (gcount < count) {
+    log_info("generating edges for {} ...", ed->name);
+    while (gcount < count && lastPick > 0) {
         std::vector<size_t> src_nodes[2], dst_nodes[2];
         size_t src_idx = 0, dst_idx = 0;
         std::vector<size_t> *src_from, *src_to, *dst_from, *dst_to;
@@ -393,7 +410,6 @@ void MakeEdges(std::shared_ptr<EdgeDesc> ed, size_t degreeMin, size_t degreeMax,
         src_to = &(src_nodes[src_idx]);
         dst_to = &(dst_nodes[dst_idx]);
 
-        log_info("-----first round pick ----");
         /* first batch pick */
         generateEdge(
                 src_from,
@@ -402,9 +418,7 @@ void MakeEdges(std::shared_ptr<EdgeDesc> ed, size_t degreeMin, size_t degreeMax,
                 dst_to /*dest   results*/,
                 false);
 
-        log_info("has gen {} edges.", gcount);
-        showvec("d=0, src", *src_to);
-        showvec("d=0, dst", *dst_to);
+        log_info("-----first round pick, has gen {} edges ----", gcount);
 
         ed->cb->dg->generate(ldepth);
 
@@ -413,15 +427,15 @@ void MakeEdges(std::shared_ptr<EdgeDesc> ed, size_t degreeMin, size_t degreeMax,
         dst_idx++;
         dst_idx = dst_idx % 2;
 
+        size_t dep = ldepth;
         log_info("ldepth {}.", ldepth);
 
-        while (ldepth > 1) {
+        while (ldepth > 1 && lastPick > 0 && gcount < count) {
             /* more depth batch pick if needed */
             src_from = dst_to;
             dst_from = src_to;
             src_to = &(src_nodes[src_idx]);
             dst_to = &(dst_nodes[dst_idx]);
-            log_info("-----{} round pick ----", ldepth);
             generateEdge(
                 src_from,
                 dst_from,
@@ -429,10 +443,7 @@ void MakeEdges(std::shared_ptr<EdgeDesc> ed, size_t degreeMin, size_t degreeMax,
                 dst_to /*dest   results*/,
                 true);
 
-            auto ti = fmt::format("d={}", ldepth);
-            showvec(ti + "src", *src_to);
-            showvec(ti + "dst", *dst_to);
-
+            log_info("-----{} round pick, src pick count: {}, has gen {} edges ----", dep - ldepth, lastPick, gcount);
             src_idx++;
             src_idx = src_idx % 2;
             dst_idx++;
@@ -440,6 +451,8 @@ void MakeEdges(std::shared_ptr<EdgeDesc> ed, size_t degreeMin, size_t degreeMax,
             ldepth--;
         }
     }
+
+    consumeEdge(); // consume at last
 }
 
 // step 2. path with depth generation
