@@ -163,10 +163,11 @@ class RandomGenerator {
  private:
   std::string data_;
   unsigned int pos_;
+  uint64_t     cnt_;
   std::unique_ptr<BaseDistribution> dist_;
 
  public:
-  RandomGenerator() {
+  RandomGenerator() : cnt_(0) {
      // case kUniform:
      //   dist_.reset(new UniformDistribution(1048576, 10485760));
      //   break;
@@ -179,9 +180,9 @@ class RandomGenerator {
      // We use a limited amount of data over and over again and ensure
      // that it is larger than the compression window (32KB), and also
      // large enough to serve all typical value sizes we want to write.
-    Random rnd(301);
+    Random rnd((uint32_t)(NowMicros()));
     std::string piece;
-    while (data_.size() < 10485760) {
+    while (data_.size() < 104857600) {
         {
             piece.resize(4096);
             for (int i = 0; i < 4096; ++i) {
@@ -194,11 +195,33 @@ class RandomGenerator {
   }
 
   void Generate(unsigned int len, std::string& val) {
+    bool need_shuffle = false;
     if (pos_ + len > data_.size()) {
       pos_ = 0;
+      need_shuffle = true;
     }
     pos_ += len;
     val = std::string(data_.data() + pos_ - len, len);
+    cnt_++;
+    if (need_shuffle) {
+        Shuffle();
+    }
+  }
+
+  void Shuffle() {
+    std::string d;
+    std::string piece;
+    Random rnd((uint32_t)(NowMicros()));
+    while (d.size() < 104857600) {
+        {
+            piece.resize(4096);
+            for (int i = 0; i < 4096; ++i) {
+                piece[i] = static_cast<char>('a' + rnd.Uniform(26));
+            }
+        }
+        d.append(piece);
+    }
+    data_ = d;
   }
 
   void Generate(std::string& val) {

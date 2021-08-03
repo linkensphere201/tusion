@@ -114,6 +114,19 @@ TEST(regex, maker) {
     }
 }
 
+TEST(random, rg) {
+    tusion::util::RandomGenerator rnd;
+    std::string val;
+    rnd.Generate(10, val);
+    log_info("gen1: {}", val);
+
+    rnd.Shuffle();
+
+    rnd.Generate(10, val);
+    log_info("gen2: {}", val);
+}
+
+
 int main(int argc, char **argv) {
     tusion::util::init_module_console_log();
     testing::InitGoogleTest(&argc, argv);

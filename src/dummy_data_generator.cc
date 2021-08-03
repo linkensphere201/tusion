@@ -14,6 +14,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace dummy_data_generator {
 
@@ -395,7 +396,7 @@ void DumpVertex(const std::string &prefix) {
     for (auto &iv : gTagMap) {
         log_info("dumping tag {} ...", iv.first);
         std::string fname = prefix + std::string("_vertex_") + "." + iv.first;
-        threads.push_back(std::thread(VertexWriter, iv.second, fname, true));
+        threads.push_back(std::thread(VertexWriter, iv.second, fname, gMissionDesc.header));
     }
     for (auto &th : threads) {
         th.join();
@@ -483,7 +484,7 @@ void MakeEdges(std::shared_ptr<EdgeDesc> ed, size_t degreeMin, size_t degreeMax,
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
 
-        log_info("consume {} edges submit done...", edge_buffer->size());
+        // log_info("consume {} edges submit done...", edge_buffer->size());
     };
 
     auto collectEdge = [&ed, &edge_buffer, &gcount, &consumeEdge](size_t s,
@@ -514,10 +515,12 @@ void MakeEdges(std::shared_ptr<EdgeDesc> ed, size_t degreeMin, size_t degreeMax,
                             std::vector<size_t> *dstfromset,
                             std::vector<size_t> *srcnodes,
                             std::vector<size_t> *dstnodes, bool conv) {
-        srcnodes->reserve(initPick * degreeMax);
-        dstnodes->reserve(initPick * degreeMax);
+        srcnodes->reserve(initPick);
+        dstnodes->reserve(initPick);
         srcnodes->clear();
         dstnodes->clear();
+
+        std::unordered_set<size_t> dst_col;
 
         std::vector<size_t> sn_dsts;
         sn_dsts.reserve(degreeMax);
@@ -536,12 +539,19 @@ void MakeEdges(std::shared_ptr<EdgeDesc> ed, size_t degreeMin, size_t degreeMax,
             nodePicker(d, 0, dstfromset->size() - 1, sn_dsts, dstfromset, conv);
             for (auto &dn : sn_dsts) {
                 collectEdge(sn, dn);
-                //    ss << dn << ",";
+                // ss << dn << ",";
+                if (gcount > count) {
+                    log_info("edge generation for {} will stop, "
+                            "because {}/{} edges has been generated.", ed->name, gcount, count);
+                    return;
+                }
             }
             // ss << "]";
             // log_info("{}", ss.str());
-            dstnodes->insert(dstnodes->end(), sn_dsts.begin(), sn_dsts.end());
+            std::for_each(sn_dsts.begin(), sn_dsts.end(), [&dst_col](size_t i){ dst_col.emplace(i); });
         }
+        std::for_each(dst_col.begin(), dst_col.end(), [&dstnodes](size_t i){dstnodes->emplace_back(i);});
+
 
         lastPick = lastPick * decayRatio;
 
@@ -552,6 +562,21 @@ void MakeEdges(std::shared_ptr<EdgeDesc> ed, size_t degreeMin, size_t degreeMax,
     fakelist_to.resize(ed->to->vlist.size());
 
     log_info("generating edges for {} ...", ed->name);
+
+    std::atomic<bool> quit;
+    quit.store(false);
+
+    auto showStatus = [&gcount, &quit](const std::string &name){
+        while(1) {
+            if (quit.load()) {
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            log_info("has generate {} edges for {} ...", gcount, name);
+        }
+    };
+    std::thread statusthread(showStatus, ed->name);
+
     while (gcount < count && lastPick > 0) {
         std::vector<size_t>  src_nodes[2], dst_nodes[2];
         size_t               src_idx = 0, dst_idx = 0;
@@ -597,8 +622,10 @@ void MakeEdges(std::shared_ptr<EdgeDesc> ed, size_t degreeMin, size_t degreeMax,
             ldepth--;
         }
     }
-
     consumeEdge(); // consume at last
+
+    quit.store(true);
+    statusthread.join();
 }
 
 // step 2. path with depth generation
@@ -637,10 +664,21 @@ bool EdgeGenerationFull(size_t count, const std::string &pref, bool header,
                         iv.second, pref, header));
     }
 
+    std::vector<std::thread> gen_threads;
     for (auto &iv : gEdgeMap) {
-        bool res = EdgeGeneration(iv.second, count, degreeMin, degreeMax,
-                                  initPickCount, decayRatio);
+        // bool res = EdgeGeneration(iv.second, count, degreeMin, degreeMax,
+        //                          initPickCount, decayRatio);
+
+        gen_threads.push_back(
+                std::thread(EdgeGeneration,
+                    iv.second, count, degreeMin, degreeMax,
+                    initPickCount, decayRatio));
     }
+
+    for (auto &th : gen_threads) {
+        th.join();
+    }
+
     quit.store(true);
 
     for (auto &th : consume_threads) {
